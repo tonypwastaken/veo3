@@ -204,7 +204,9 @@ def get_text_prompt():
     """Get text prompt from user."""
     print("\n📝 Enter your video description:")
     if len(sys.argv) > 1:
-        prompt = sys.argv[1]
+        with open(sys.argv[1], "r") as file:
+            prompt = file.read()
+        print(f"Prompt: {prompt}")
     else:
         prompt = input("Prompt: ").strip()
     while not prompt:
