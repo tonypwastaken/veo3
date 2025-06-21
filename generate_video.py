@@ -14,6 +14,9 @@ from typing import Optional
 from google import genai
 from google.genai.types import GenerateVideosConfig, Image
 from google.cloud import storage
+from google.oauth2.credentials import Credentials as AuthCredentials
+from google.cloud import aiplatform  # For aiplatform.init()
+import google.auth  # For exceptions
 
 # Configuration
 PROJECT_ID = "veo-testing"
@@ -29,34 +32,92 @@ def initialize_genai():
         os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
         os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION_ID
         os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "True"
-        os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-        # Check for API key first
-        api_key = os.environ.get("GOOGLE_API_KEY")
-        if api_key:
-            print("🔑 Using API key authentication")
-            # Note: API key support may be limited for Vertex AI
-        # Check for service account key file
-        elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-            service_account_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-            if os.path.exists(service_account_path):
-                print(f"🔑 Using service account: {service_account_path}")
-        elif os.path.exists("veo-service-account.json"):
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "veo-service-account.json"
-            print("🔑 Using local service account key: veo-service-account.json")
+        access_token = os.environ.get("GOOGLE_ACCESS_TOKEN")
+
+        if access_token:
+            print("🔑 Using provided GOOGLE_ACCESS_TOKEN for authentication.")
+            print(
+                "💡 Note: Access tokens are short-lived. This method is not suitable for long-running processes without token refresh logic."
+            )
+            creds_from_token = AuthCredentials(token=access_token)
+            # Initialize aiplatform with these explicit credentials.
+            # genai.Client() will then use this initialized aiplatform session.
+            aiplatform.init(
+                project=PROJECT_ID, location=LOCATION_ID, credentials=creds_from_token
+            )
         else:
-            print("🔑 Using default authentication (gcloud or environment)")
+            # If no access token, set up for ADC/Service Account for aiplatform.
+            # genai.Client() will internally call aiplatform.init(),
+            # which will discover credentials from the environment.
+            os.environ["GOOGLE_CLOUD_PROJECT"] = PROJECT_ID
+            os.environ["GOOGLE_CLOUD_LOCATION"] = LOCATION_ID
+            print("🔑 No GOOGLE_ACCESS_TOKEN found. Attempting authentication using:")
+            if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                service_account_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+                # Check if the path actually exists
+                if os.path.exists(service_account_path):
+                    print(
+                        f"   - Service account via GOOGLE_APPLICATION_CREDENTIALS: {service_account_path}"
+                    )
+                else:
+                    print(
+                        f"   - GOOGLE_APPLICATION_CREDENTIALS is set but file not found: {service_account_path}"
+                    )
+                    print(
+                        "     Falling back to Application Default Credentials (ADC) or other means."
+                    )
+            elif os.path.exists("veo-service-account.json"):
+                # This part of the original script sets the env var.
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
+                    "veo-service-account.json"
+                )
+                print("   - Local service account key: veo-service-account.json")
+            else:
+                # API Key is not the primary auth for Vertex AI via genai SDK; ADC is.
+                print(
+                    "   - Application Default Credentials (ADC) (e.g., from 'gcloud auth application-default login')"
+                )
 
-        # Initialize the client
+        # Initialize the GenAI client.
         client = genai.Client()
-        print(f"✅ Google GenAI client initialized for project: {PROJECT_ID}")
+        print(
+            f"✅ Google GenAI client initialized for project: {PROJECT_ID}, location: {LOCATION_ID} using Vertex AI."
+        )
         return client
+
+    except google.auth.exceptions.DefaultCredentialsError as e:
+        print(f"❌ Authentication Error: {e}")
+        print(
+            "💡 Please ensure your environment is authenticated correctly for Google Cloud and Vertex AI."
+        )
+        print("   Common methods include:")
+        print("   - Setting GOOGLE_ACCESS_TOKEN (short-lived).")
+        print(
+            "   - Setting GOOGLE_APPLICATION_CREDENTIALS to a valid service account JSON key file."
+        )
+        print("   - Running 'gcloud auth application-default login'.")
+        print(
+            f"   - Ensure project '{PROJECT_ID}' and location '{LOCATION_ID}' are correctly configured and accessible."
+        )
+        return None
     except Exception as e:
         print(f"❌ Error initializing Google GenAI client: {e}")
         print("💡 Make sure you have proper authentication set up:")
-        print("   - Service account key file, or")
-        print("   - gcloud auth login, or")
-        print("   - GOOGLE_APPLICATION_CREDENTIALS environment variable")
+        print("   - GOOGLE_ACCESS_TOKEN environment variable, or")
+        print(
+            "   - Service account key file (GOOGLE_APPLICATION_CREDENTIALS or veo-service-account.json), or"
+        )
+        print(
+            "   - gcloud auth login, or"
+        )  # Original line, might be better as 'gcloud auth application-default login'
+        print(
+            "   - GOOGLE_APPLICATION_CREDENTIALS environment variable"
+        )  # This is redundant with the SA key file line.
+        # Let's refine these general error messages.
+        print(
+            "   (e.g., 'gcloud auth application-default login' or service account key)."
+        )
         return None
 
 
@@ -239,7 +300,6 @@ def generate_text_to_video(client, prompt: str, parameters: dict):
             # DEBUG: Print the full response structure
             print("\n🔍 DEBUG - Response structure:")
             print(f"operation.response: {operation.response}")
-            os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
             if hasattr(operation, "result"):
                 print(f"operation.result: {operation.result}")
                 print(f"operation.result type: {type(operation.result)}")
